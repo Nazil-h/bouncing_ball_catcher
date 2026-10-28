@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <random>
 #include <string>
 #include <vector>
@@ -32,9 +33,13 @@ public:
     ball_speed_ = this->declare_parameter<double>("ball_speed", 150.0);
     ball_radius_ = this->declare_parameter<int>("ball_radius", 40);
     hold_duration_ = this->declare_parameter<double>("hold_duration", 2.0);
+    round_duration_ = this->declare_parameter<double>("round_duration", 60.0);
+    smoothing_alpha_ = this->declare_parameter<double>("smoothing_alpha", 0.5);
 
     hsv_lower_ = cv::Scalar(lower[0], lower[1], lower[2]);
     hsv_upper_ = cv::Scalar(upper[0], upper[1], upper[2]);
+
+    round_time_left_ = round_duration_;
 
     kernel_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
 
@@ -45,7 +50,9 @@ public:
     pub_score_ = this->create_publisher<std_msgs::msg::Int32>("/game/score", 10);
     pub_debug_ = this->create_publisher<sensor_msgs::msg::Image>("/game/debug_image", 10);
 
-    RCLCPP_INFO(this->get_logger(), "game_node jalan, menunggu gambar...");
+    RCLCPP_INFO(this->get_logger(),
+      "game_node jalan. Ronde %.0f detik. Tekan 'r' di jendela gambar untuk main ulang.",
+      round_duration_);
   }
 
 private:
@@ -61,7 +68,6 @@ private:
     }
   }
 
-  // Bola diatur posisinya secara acak + atur timer
   void respawn(Ball & b, int frame_w, int frame_h)
   {
     std::uniform_real_distribution<double> ux(b.radius, frame_w - b.radius);
@@ -103,10 +109,8 @@ private:
     }
   }
 
-  // Timer bertambah untuk bola yang kena tutup, sisanya 0
   void update_game(bool detected, cv::Point2d centroid, double dt, int frame_w, int frame_h)
   {
-    // Cari bola yang berisi centroid dan paling dekat ke pusatnya
     int chosen = -1;
     double best_dist = 1e18;
     if (detected) {
@@ -119,7 +123,6 @@ private:
       }
     }
 
-    // Timer: bertambah untuk bola terpilih, reset(0) untuk yang lain
     for (size_t i = 0; i < balls_.size(); ++i) {
       if (static_cast<int>(i) == chosen) {
         balls_[i].timer += dt;
@@ -128,13 +131,22 @@ private:
       }
     }
 
-    // Cek skor
     if (chosen >= 0 && balls_[chosen].timer >= hold_duration_) {
       score_++;
       respawn(balls_[chosen], frame_w, frame_h);
       publish_score();
       RCLCPP_INFO(this->get_logger(), "Skor! Sekarang: %d", score_);
     }
+  }
+
+  void reset_game(int frame_w, int frame_h)
+  {
+    score_ = 0;
+    round_time_left_ = round_duration_;
+    round_over_ = false;
+    spawn_balls(num_balls_, frame_w, frame_h);
+    publish_score();
+    RCLCPP_INFO(this->get_logger(), "Ronde baru dimulai.");
   }
 
   void publish_score()
@@ -159,7 +171,7 @@ private:
 
   void on_image(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
   {
-    // 1. Bungkus pesan jadi cv::Mat
+    // 1. Bungkus pesan jadi cv::Mat (tanpa menyalin)
     cv::Mat frame(msg->height, msg->width, CV_8UC3,
                   const_cast<uint8_t *>(msg->data.data()), msg->step);
 
@@ -188,20 +200,30 @@ private:
       }
     }
 
-    // 5. Hitung centroid kalau objek cukup besar
+    // 5. Hitung centroid (dihaluskan) kalau objek cukup besar
     bool detected = false;
     cv::Point2d centroid(0, 0);
     cv::Rect box;
     if (best_index >= 0 && best_area >= min_area_) {
       cv::Moments m = cv::moments(contours[best_index]);
       if (m.m00 > 0) {
-        centroid = cv::Point2d(m.m10 / m.m00, m.m01 / m.m00);
+        cv::Point2d raw(m.m10 / m.m00, m.m01 / m.m00);
+        if (!has_smoothed_) {
+          smoothed_centroid_ = raw;
+          has_smoothed_ = true;
+        } else {
+          smoothed_centroid_ =
+            raw * smoothing_alpha_ + smoothed_centroid_ * (1.0 - smoothing_alpha_);
+        }
+        centroid = smoothed_centroid_;
         box = cv::boundingRect(contours[best_index]);
         detected = true;
       }
+    } else {
+      has_smoothed_ = false;
     }
 
-    // 6. Hitung dt dari timestamp
+    // 6. Hitung dt dari timestamp, dibatasi 0..0.2 detik
     rclcpp::Time stamp(msg->header.stamp);
     if (!has_balls_) {
       spawn_balls(num_balls_, frame.cols, frame.rows);
@@ -214,11 +236,25 @@ private:
     last_stamp_ = stamp;
     has_last_stamp_ = true;
 
-    // 7. Gerakkan bola, lalu jalankan aturan game
-    update_balls(dt, frame.cols, frame.rows);
-    update_game(detected, centroid, dt, frame.cols, frame.rows);
+    // 7. Ronde berjalan: gerakkan bola, jalankan aturan, kurangi waktu
+    if (!round_over_) {
+      update_balls(dt, frame.cols, frame.rows);
+      update_game(detected, centroid, dt, frame.cols, frame.rows);
 
-    // 8. Gambar: bola transparan + progres timer
+      round_time_left_ -= dt;
+      if (round_time_left_ <= 0.0) {
+        round_time_left_ = 0.0;
+        round_over_ = true;
+        RCLCPP_INFO(this->get_logger(),
+          "Waktu habis! Skor akhir: %d. Tekan 'r' untuk main lagi.", score_);
+      }
+    } else {
+      for (auto & b : balls_) {
+        b.timer = 0.0;
+      }
+    }
+
+    // 8. Gambar bola transparan dan bar progres
     cv::Mat annotated = frame.clone();
     cv::Mat overlay = annotated.clone();
     for (const auto & b : balls_) {
@@ -239,22 +275,43 @@ private:
       }
     }
 
-    // 9. Tandai objek
+    // 9. Tandai objek pemain
     if (detected) {
       cv::circle(annotated, cv::Point(centroid.x, centroid.y), 6, cv::Scalar(0, 0, 255), -1);
       cv::rectangle(annotated, box, cv::Scalar(0, 255, 0), 2);
     }
 
-    // 10. Tampilan skor di pojok kiri atas
+    // 10. Skor (kiri atas) dan sisa waktu (kanan atas)
     cv::putText(annotated, "Score: " + std::to_string(score_),
                 cv::Point(10, 35), cv::FONT_HERSHEY_SIMPLEX, 1.0,
                 cv::Scalar(0, 255, 0), 2);
 
-    // 11. Publish dan tampilkan
+    char time_text[64];
+    std::snprintf(time_text, sizeof(time_text), "Waktu: %.1f", round_time_left_);
+    cv::putText(annotated, time_text,
+                cv::Point(frame.cols - 200, 35), cv::FONT_HERSHEY_SIMPLEX, 1.0,
+                cv::Scalar(0, 255, 0), 2);
+
+    // 11. Layar akhir ronde
+    if (round_over_) {
+      cv::putText(annotated, "WAKTU HABIS",
+                  cv::Point(frame.cols / 2 - 180, frame.rows / 2 - 20),
+                  cv::FONT_HERSHEY_SIMPLEX, 1.5, cv::Scalar(0, 0, 255), 3);
+      cv::putText(annotated, "Tekan R untuk main lagi",
+                  cv::Point(frame.cols / 2 - 190, frame.rows / 2 + 30),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+    }
+
+    // 12. Publish dan tampilkan
     publish_debug(annotated, msg->header);
     cv::imshow("frame", annotated);
     cv::imshow("mask", mask);
-    cv::waitKey(1);
+
+    // 13. Tombol 'r' untuk ronde baru
+    int key = cv::waitKey(1);
+    if (key == 'r' || key == 'R') {
+      reset_game(frame.cols, frame.rows);
+    }
   }
 
   cv::Scalar hsv_lower_;
@@ -264,6 +321,8 @@ private:
   double ball_speed_;
   int ball_radius_;
   double hold_duration_;
+  double round_duration_;
+  double smoothing_alpha_;
   cv::Mat kernel_;
 
   std::vector<Ball> balls_;
@@ -271,6 +330,10 @@ private:
   rclcpp::Time last_stamp_{0, 0, RCL_ROS_TIME};
   bool has_last_stamp_ = false;
   int score_ = 0;
+  double round_time_left_ = 0.0;
+  bool round_over_ = false;
+  cv::Point2d smoothed_centroid_{0, 0};
+  bool has_smoothed_ = false;
   std::mt19937 rng_{std::random_device{}()};
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_;

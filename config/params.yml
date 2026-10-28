@@ -14,3 +14,5 @@ game_node:
     ball_speed: 150.0
     ball_radius: 40
     hold_duration: 2.0
+    round_duration: 60.0
+    smoothing_alpha: 0.5
