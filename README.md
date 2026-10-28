@@ -93,6 +93,7 @@ Semua parameter ada di `config/params.yaml`. Parameter bisa diubah tanpa build u
 | game_node | ball_speed | 150.0 | Kecepatan bola (piksel per detik) |
 | game_node | ball_radius | 40 | Radius bola (piksel) |
 | game_node | hold_duration | 2.0 | Durasi tahan untuk mendapat skor (detik) |
+| game_node | round_duration | 60.0 | Durasi satu ronde (detik) |
 
 Cek nilai parameter yang sedang aktif (saat node berjalan):
 
@@ -127,11 +128,13 @@ ros2 param get /game_node hsv_lower
 
 ## Bonus
 
-Belum ada bonus yang dikerjakan. Fitur yang sudah ada (flip gambar lewat parameter, bar progres timer, dan bola transparan) termasuk dalam komponen wajib atau tampilan pendukung, bukan bonus dari daftar bagian 6.
+- **Mode ronde dengan batas waktu**: setiap ronde berlangsung `round_duration` detik (default 60 detik). Sisa waktu ditampilkan di pojok kanan atas, dan saat waktu habis game berhenti dan menampilkan skor. Tekan `R` untuk memulai ronde baru.
+- **Tracking lebih halus**: centroid dihaluskan dengan exponential smoothing (`smoothing_alpha`), sehingga titik dan kotak pemain tidak bergetar. Smoothing direset saat objek tidak terdeteksi.
+Fitur yang sudah ada (flip gambar lewat parameter, bar progres timer, dan bola transparan) termasuk dalam komponen wajib atau tampilan pendukung, bukan bonus dari daftar bagian 6.
 
 ## Demo
 
-- Video demo (1 sampai 2 menit, termasuk momen skor naik): [tautan video]
+- Video demo (1 sampai 2 menit, termasuk momen skor naik): https://drive.google.com/file/d/1hE6NYdW9NTrjitQljQBXWvK8oZZ_7pK4/view?usp=drive_link
 - Screenshot rqt_graph: `docs/rqt_graph.png`
 
 ![rqt_graph](docs/rqt_graph.png)
