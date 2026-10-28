@@ -1,0 +1,16 @@
+camera_node:
+  ros__parameters:
+    source: "0"      
+    fps: 15.0
+    width: 640
+    height: 480
+
+game_node:
+  ros__parameters:
+    hsv_lower: [90, 50, 80]
+    hsv_upper: [110, 255, 255]
+    min_area: 300
+    num_balls: 3
+    ball_speed: 150.0
+    ball_radius: 40
+    hold_duration: 2.0
